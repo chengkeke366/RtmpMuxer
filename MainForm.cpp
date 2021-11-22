@@ -137,10 +137,8 @@ void MainForm::on_start_clicked()
 	m_write_mp4_thread = std::shared_ptr<std::thread>(new std::thread([&, audio_stream_index, video_stream_index]() {
 		std::cout << "m_write_mp4_thread thread id:" << std::this_thread::get_id() << std::endl;
 		AVPacket packet;
-		std::unique_lock<std::mutex> locker(m_write_mutex);
 		while (!m_bexit_record)
 		{
-			locker.unlock();
 			auto ret = av_read_frame(m_input_fmt_ctx, &packet);
 			if (ret < 0)
 			{
@@ -183,9 +181,7 @@ void MainForm::on_start_clicked()
 			std::cout << "shared_ptr destroy function thread id:" << std::this_thread::get_id() << std::endl;;
 			if (p->joinable())
 			{
-				std::unique_lock<std::mutex> locker(m_write_mutex);
 				m_bexit_record = true;
-				locker.unlock();
 				p->join();
 			}
 		}
