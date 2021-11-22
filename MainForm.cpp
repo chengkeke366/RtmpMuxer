@@ -5,11 +5,30 @@
 
 extern "C"
 {
+#include <libavutil/timestamp.h>
 #include <libavutil/avutil.h>
 #include <libavutil/opt.h>
+#include <libavutil/mathematics.h>
 #include <libavformat/avformat.h>
 #include <libavformat/avio.h>
 #include <libavcodec/avcodec.h>
+}
+
+char ts_str[AV_TS_MAX_STRING_SIZE] = { 0 };
+#define av_ts2timestr2(ts, tb) av_ts_make_time_string(ts_str, ts, tb)
+#define av_ts2str2(ts) av_ts_make_string(ts_str, ts)
+#define av_err2str2(errnum) \
+    av_make_error_string(ts_str, AV_ERROR_MAX_STRING_SIZE, errnum)
+
+static void log_packet(const AVFormatContext* fmt_ctx, const AVPacket* pkt, const char* tag)
+{
+	AVRational* time_base = &fmt_ctx->streams[pkt->stream_index]->time_base;
+	printf("%s: pts:%s pts_time:%s dts:%s dts_time:%s duration:%s duration_time:%s stream_index:%d\n",
+		tag,
+		av_ts2str2(pkt->pts), av_ts2timestr2(pkt->pts, time_base),
+		av_ts2str2(pkt->dts), av_ts2timestr2(pkt->dts, time_base),
+		av_ts2str2(pkt->duration), av_ts2timestr2(pkt->duration, time_base),
+		pkt->stream_index);
 }
 
 MainForm::MainForm(QWidget *parent) :
@@ -27,8 +46,9 @@ MainForm::~MainForm()
 void MainForm::on_start_clicked()
 {
 	m_bexit_record = false;
-	m_input_fmt_ctx = avformat_alloc_context();
-	int ret = avformat_open_input(&m_input_fmt_ctx, ui->lineEdit->text().toStdString().c_str(), NULL, NULL);
+	std::string input_name = ui->lineEdit->text().toStdString();
+	const char* input_filename = input_name.c_str();
+	int ret = avformat_open_input(&m_input_fmt_ctx, input_filename, NULL, NULL);
 	if (ret < 0)
 	{
 		return;
@@ -41,8 +61,11 @@ void MainForm::on_start_clicked()
 		return;
 	}
 
+	av_dump_format(m_input_fmt_ctx, 0, input_filename, 0);
+
 	m_output_filename = ui->outputname->text() + "." + ui->comboBox->currentText();
-	ret = avformat_alloc_output_context2(&m_output_fmt_ctx, NULL, ui->comboBox->currentText().toStdString().c_str(), m_output_filename.toStdString().c_str());
+
+	ret = avformat_alloc_output_context2(&m_output_fmt_ctx, NULL, NULL, m_output_filename.toStdString().c_str());
 	if (ret < 0)
 	{
 		return;
@@ -53,7 +76,7 @@ void MainForm::on_start_clicked()
 	//add stream
 	for (int i=0; i<m_input_fmt_ctx->nb_streams; i++)
 	{
-		if (m_input_fmt_ctx->streams[i]->codec->codec_type == AVMEDIA_TYPE_VIDEO)
+		if (m_input_fmt_ctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO)
 		{
 			AVStream* video_stream = avformat_new_stream(m_output_fmt_ctx, m_input_fmt_ctx->streams[i]->codec->codec);
 			if (!video_stream)
@@ -64,12 +87,13 @@ void MainForm::on_start_clicked()
 			video_stream_index = video_stream->index;
 
 
-			if (avcodec_copy_context(video_stream->codec, m_input_fmt_ctx->streams[i]->codec) < 0)
+			if (avcodec_parameters_copy(video_stream->codecpar, m_input_fmt_ctx->streams[i]->codecpar) < 0)
 			{
 				std::cout << "copy codec settings to output stream error" << std::endl;
 			}
+			video_stream->codecpar->codec_tag = 0;
 		}
-		else if (m_input_fmt_ctx->streams[i]->codec->codec_type == AVMEDIA_TYPE_AUDIO)
+		else if (m_input_fmt_ctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO)
 		{
 			AVStream* audio_stream = avformat_new_stream(m_output_fmt_ctx, m_input_fmt_ctx->streams[i]->codec->codec);
 			if (!audio_stream)
@@ -79,13 +103,17 @@ void MainForm::on_start_clicked()
 			}
 			audio_stream_index = audio_stream->index;
 
-			if (avcodec_copy_context(audio_stream->codec, m_input_fmt_ctx->streams[i]->codec) < 0)
+			if (avcodec_parameters_copy(audio_stream->codecpar, m_input_fmt_ctx->streams[i]->codecpar) < 0)
 			{
 				std::cout << "copy codec settings to output stream error" << std::endl;
 			}
+
+			audio_stream->codecpar->codec_tag = 0;
 		}
 
 	}
+
+	av_dump_format(m_output_fmt_ctx, 0, m_output_filename.toStdString().c_str(), 1);
 
 	/* open the output file, if needed */    
 	if (!(m_output_fmt_ctx->flags & AVFMT_NOFILE)) 
@@ -106,47 +134,62 @@ void MainForm::on_start_clicked()
 	}
 
    //start 录制mp4线程，进行写Body操作
-	m_write_mp4_thread = std::shared_ptr<std::thread>(new std::thread([&,audio_stream_index,video_stream_index]() {
-		AVPacket* packet = nullptr;
-		packet = av_packet_alloc();
-		packet->data = nullptr;
-		packet->size = 0;
-		av_init_packet(packet);
+	m_write_mp4_thread = std::shared_ptr<std::thread>(new std::thread([&, audio_stream_index, video_stream_index]() {
+		std::cout << "m_write_mp4_thread thread id:" << std::this_thread::get_id() << std::endl;
+		AVPacket packet;
+		std::unique_lock<std::mutex> locker(m_write_mutex);
 		while (!m_bexit_record)
 		{
-			auto ret = av_read_frame(m_input_fmt_ctx, packet);
+			locker.unlock();
+			auto ret = av_read_frame(m_input_fmt_ctx, &packet);
 			if (ret < 0)
 			{
 				break;
 			}
 
-			if (packet->stream_index == audio_stream_index)
+			AVStream *input_steam = m_input_fmt_ctx->streams[packet.stream_index];
+			if (input_steam->codecpar->codec_type == AVMEDIA_TYPE_AUDIO)
 			{
-				std::cout << "audio packet pts: " << packet->pts << " dts:" << packet->dts << std::endl;
-			}else if (packet->stream_index == video_stream_index)
+				packet.stream_index = audio_stream_index;
+			}
+			else if (input_steam->codecpar->codec_type == AVMEDIA_TYPE_VIDEO)
 			{
-				std::cout << "video packet pts: " << packet->pts << " dts:" << packet->dts << std::endl;
+				packet.stream_index = video_stream_index;
 			}
 			else {
 				continue;
 			}
 			
-			ret = av_interleaved_write_frame(m_output_fmt_ctx, packet);
+		
+			AVRational itime = m_input_fmt_ctx->streams[packet.stream_index]->time_base;
+			AVRational otime = m_output_fmt_ctx->streams[packet.stream_index]->time_base;
+			packet.pts = av_rescale_q_rnd(packet.pts, itime, otime, AVRounding(AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX));
+			packet.dts = av_rescale_q_rnd(packet.dts, itime, otime, AVRounding(AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX));
+			packet.duration = av_rescale_q(packet.duration, itime, otime);
+			packet.pos = -1;
+			log_packet(m_output_fmt_ctx, &packet, "out");
+
+			std::cout << "av_interleaved_write_frame" << std::endl;
+			ret = av_interleaved_write_frame(m_output_fmt_ctx, &packet);
+			std::cout << "av_interleaved_write_frame finish" << std::endl;
 			if (ret < 0)
 			{
 				std::cout << "av_interleaved_write_frame error:" << ret << std::endl;
 			}
+			av_packet_unref(&packet);
 		}
-
+		
 		}), [&](std::thread* p) {
-			m_bexit_record = true;
+			std::cout << "shared_ptr destroy function thread id:" << std::this_thread::get_id() << std::endl;;
 			if (p->joinable())
 			{
+				std::unique_lock<std::mutex> locker(m_write_mutex);
+				m_bexit_record = true;
+				locker.unlock();
 				p->join();
 			}
 		}
 	);
-	
 }
 void MainForm::on_stop_clicked()
 {
@@ -155,8 +198,9 @@ void MainForm::on_stop_clicked()
 	
 	//写MP4录制尾巴
 	av_write_trailer(m_output_fmt_ctx);
+	avformat_close_input(&m_input_fmt_ctx);
+
 	if (m_output_fmt_ctx && !(m_output_fmt_ctx->flags & AVFMT_NOFILE))
 		avio_close(m_output_fmt_ctx->pb);
 	avformat_free_context(m_output_fmt_ctx);
-	avformat_close_input(&m_input_fmt_ctx);
 }

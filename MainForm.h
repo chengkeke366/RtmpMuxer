@@ -5,7 +5,7 @@
 #include <thread>
 #include <memory>
 #include <atomic>
-
+#include <mutex>
 namespace Ui
 {
 class MainForm;
@@ -27,12 +27,13 @@ public slots:
 	void on_stop_clicked();
 private:
 	Ui::MainForm*ui;
-	AVFormatContext* m_input_fmt_ctx;
-	AVFormatContext* m_output_fmt_ctx;
+	AVFormatContext* m_input_fmt_ctx{nullptr};
+	AVFormatContext* m_output_fmt_ctx{nullptr};
 	QString m_output_filename;
 
 	std::shared_ptr<std::thread> m_write_mp4_thread;
 	std::atomic<bool> m_bexit_record{ false };
+	std::mutex m_write_mutex;
 };
 
 #endif // frmSwitchButton_H

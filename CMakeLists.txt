@@ -21,4 +21,4 @@ if (WIN32)
 	target_link_options(${CMAKE_PROJECT_NAME} PUBLIC "$<$<C_COMPILER_ID:MSVC>:-SAFESEH:NO>")
 endif()
 
-target_link_libraries(RtmpMuxer   avformat  avcodec Qt5::Widgets Qt5::Core)
+target_link_libraries(RtmpMuxer   avformat avutil avcodec Qt5::Widgets Qt5::Core)
