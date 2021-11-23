@@ -1,7 +1,7 @@
 ﻿#ifndef FRMSWITCHBUTTON_H
 #define FRMSWITCHBUTTON_H
 
-#include <QWidget>
+#include <QtWidgets/QWidget>
 #include <thread>
 #include <memory>
 #include <atomic>
@@ -12,7 +12,6 @@ class MainForm;
 }
 
 class AVFormatContext;
-
 
 class MainForm : public QWidget
 {
@@ -32,8 +31,7 @@ private:
 	QString m_output_filename;
 
 	std::shared_ptr<std::thread> m_write_mp4_thread;
-	std::atomic<bool> m_bexit_record{ false };
-	std::mutex m_write_mutex;
+	bool m_bexit_record{ false };
 };
 
 #endif // frmSwitchButton_H

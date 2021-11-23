@@ -76,7 +76,12 @@
        </item>
        <item>
         <property name="text">
-         <string>hls</string>
+         <string>m3u8</string>
+        </property>
+       </item>
+       <item>
+        <property name="text">
+         <string>ts</string>
         </property>
        </item>
       </widget>

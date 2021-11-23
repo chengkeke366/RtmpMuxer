@@ -112,11 +112,14 @@ void MainForm::on_start_clicked()
 		}
 
 	}
+	std::string type = ui->comboBox->currentText().toStdString();
+
 
 	av_dump_format(m_output_fmt_ctx, 0, m_output_filename.toStdString().c_str(), 1);
 
+
 	/* open the output file, if needed */    
-	if (!(m_output_fmt_ctx->flags & AVFMT_NOFILE)) 
+	if (!(m_output_fmt_ctx->oformat->flags & AVFMT_NOFILE)) 
 	{ 
 		ret = avio_open(&m_output_fmt_ctx->pb, m_output_filename.toStdString().c_str(), AVIO_FLAG_WRITE);       
 		if (ret < 0) 
@@ -126,6 +129,7 @@ void MainForm::on_start_clicked()
 		} 
 	}
 
+
 	//写mp4头
 	ret = avformat_write_header(m_output_fmt_ctx, nullptr);
 	if (ret < 0) {
@@ -134,7 +138,7 @@ void MainForm::on_start_clicked()
 	}
 
    //start 录制mp4线程，进行写Body操作
-	m_write_mp4_thread = std::shared_ptr<std::thread>(new std::thread([&, audio_stream_index, video_stream_index]() {
+	m_write_mp4_thread = std::shared_ptr<std::thread>(new std::thread([this, video_stream_index, audio_stream_index]() {
 		std::cout << "m_write_mp4_thread thread id:" << std::this_thread::get_id() << std::endl;
 		AVPacket packet;
 		while (!m_bexit_record)
@@ -155,9 +159,9 @@ void MainForm::on_start_clicked()
 				packet.stream_index = video_stream_index;
 			}
 			else {
+				av_packet_unref(&packet);
 				continue;
 			}
-			
 		
 			AVRational itime = m_input_fmt_ctx->streams[packet.stream_index]->time_base;
 			AVRational otime = m_output_fmt_ctx->streams[packet.stream_index]->time_base;
@@ -166,6 +170,7 @@ void MainForm::on_start_clicked()
 			packet.duration = av_rescale_q(packet.duration, itime, otime);
 			packet.pos = -1;
 			log_packet(m_output_fmt_ctx, &packet, "out");
+			//log_packet(m_output_fmt_ctx, &packet, "out");
 
 			std::cout << "av_interleaved_write_frame" << std::endl;
 			ret = av_interleaved_write_frame(m_output_fmt_ctx, &packet);
@@ -176,13 +181,14 @@ void MainForm::on_start_clicked()
 			}
 			av_packet_unref(&packet);
 		}
-		
+		av_write_trailer(m_output_fmt_ctx);
 		}), [&](std::thread* p) {
-			std::cout << "shared_ptr destroy function thread id:" << std::this_thread::get_id() << std::endl;;
+			std::cout << "shared_ptr destroy function thread id:" << std::this_thread::get_id() << std::endl;
 			if (p->joinable())
-			{
+			{	
 				m_bexit_record = true;
 				p->join();
+				std::cout << "write thread finished: " << std::this_thread::get_id() << std::endl;
 			}
 		}
 	);
@@ -191,12 +197,21 @@ void MainForm::on_stop_clicked()
 {
 	//停止写mp4线程
 	m_write_mp4_thread.reset();
-	
+	std::cout << "close remuxing:" << std::this_thread::get_id() << std::endl;
 	//写MP4录制尾巴
-	av_write_trailer(m_output_fmt_ctx);
-	avformat_close_input(&m_input_fmt_ctx);
+	if (m_input_fmt_ctx)
+	{
+		avformat_close_input(&m_input_fmt_ctx);
+		m_input_fmt_ctx = nullptr;
+	}
 
-	if (m_output_fmt_ctx && !(m_output_fmt_ctx->flags & AVFMT_NOFILE))
+	
+	if (m_output_fmt_ctx && !(m_output_fmt_ctx->oformat->flags & AVFMT_NOFILE))
 		avio_close(m_output_fmt_ctx->pb);
-	avformat_free_context(m_output_fmt_ctx);
+	if (m_output_fmt_ctx)
+	{
+		avformat_free_context(m_output_fmt_ctx);
+		m_output_fmt_ctx = nullptr;
+	}
+
 }
