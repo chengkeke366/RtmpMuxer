@@ -36,6 +36,7 @@ MainForm::MainForm(QWidget *parent) :
 	ui(new Ui::MainForm)
 {
 	ui->setupUi(this);	
+	ui->textBrowser->moveCursor(QTextCursor::End,QTextCursor::KeepAnchor);
 }
 
 MainForm::~MainForm()
@@ -46,6 +47,9 @@ MainForm::~MainForm()
 void MainForm::on_start_clicked()
 {
 	m_bexit_record = false;
+	ui->textBrowser->append(QString("[INFO]start remuxing \n"));
+	ui->start->setEnabled(false);
+	ui->stop->setEnabled(true);
 	std::string input_name = ui->lineEdit->text().toStdString();
 	const char* input_filename = input_name.c_str();
 	int ret = avformat_open_input(&m_input_fmt_ctx, input_filename, NULL, NULL);
@@ -57,7 +61,7 @@ void MainForm::on_start_clicked()
 	ret = avformat_find_stream_info(m_input_fmt_ctx, NULL);
 	if (ret < 0)
 	{
-		fprintf(stderr, "Could not find stream information\n");
+		ui->textBrowser->append("Could not find stream information\n");
 		return;
 	}
 
@@ -81,7 +85,7 @@ void MainForm::on_start_clicked()
 			AVStream* video_stream = avformat_new_stream(m_output_fmt_ctx, m_input_fmt_ctx->streams[i]->codec->codec);
 			if (!video_stream)
 			{
-				std::cout << "new video stream error" << std::endl;
+				ui->textBrowser->append("[ERRRO]new video stream error\n");
 				return;
 			}
 			video_stream_index = video_stream->index;
@@ -89,7 +93,7 @@ void MainForm::on_start_clicked()
 
 			if (avcodec_parameters_copy(video_stream->codecpar, m_input_fmt_ctx->streams[i]->codecpar) < 0)
 			{
-				std::cout << "copy codec settings to output stream error" << std::endl;
+				ui->textBrowser->append("[ERROR]copy codec settings to output stream error\n");
 			}
 			video_stream->codecpar->codec_tag = 0;
 		}
@@ -98,14 +102,14 @@ void MainForm::on_start_clicked()
 			AVStream* audio_stream = avformat_new_stream(m_output_fmt_ctx, m_input_fmt_ctx->streams[i]->codec->codec);
 			if (!audio_stream)
 			{
-				std::cout << "new audio stream error" << std::endl;
+				ui->textBrowser->append("[ERROR]add new audio stream error\n");
 				return;
 			}
 			audio_stream_index = audio_stream->index;
 
 			if (avcodec_parameters_copy(audio_stream->codecpar, m_input_fmt_ctx->streams[i]->codecpar) < 0)
 			{
-				std::cout << "copy codec settings to output stream error" << std::endl;
+				ui->textBrowser->append("[ERROR]copy codec settings to output stream error\n");
 			}
 
 			audio_stream->codecpar->codec_tag = 0;
@@ -124,7 +128,7 @@ void MainForm::on_start_clicked()
 		ret = avio_open(&m_output_fmt_ctx->pb, m_output_filename.toStdString().c_str(), AVIO_FLAG_WRITE);       
 		if (ret < 0) 
 		{ 
-			fprintf(stderr, "Could not open '%s': %d\n", m_output_filename.toStdString().c_str(), ret);
+			ui->textBrowser->append(QString("Could not open '%1': %2\n").arg(m_output_filename.toStdString().c_str()).arg(ret));
 			return; 
 		} 
 	}
@@ -133,13 +137,12 @@ void MainForm::on_start_clicked()
 	//写mp4头
 	ret = avformat_write_header(m_output_fmt_ctx, nullptr);
 	if (ret < 0) {
-		("[ABox][MP] write header failed:%d filename:%s", ret, m_output_fmt_ctx->url);
+		ui->textBrowser->append(QString("[ABox][MP] write header failed : %1 filename : %2\n").arg(ret).arg(m_output_fmt_ctx->url));
 		return ;
 	}
 
    //start 录制mp4线程，进行写Body操作
 	m_write_mp4_thread = std::shared_ptr<std::thread>(new std::thread([this, video_stream_index, audio_stream_index]() {
-		std::cout << "m_write_mp4_thread thread id:" << std::this_thread::get_id() << std::endl;
 		AVPacket packet;
 		while (!m_bexit_record)
 		{
@@ -170,25 +173,26 @@ void MainForm::on_start_clicked()
 			packet.duration = av_rescale_q(packet.duration, itime, otime);
 			packet.pos = -1;
 			log_packet(m_output_fmt_ctx, &packet, "out");
-			//log_packet(m_output_fmt_ctx, &packet, "out");
-
-			std::cout << "av_interleaved_write_frame" << std::endl;
 			ret = av_interleaved_write_frame(m_output_fmt_ctx, &packet);
-			std::cout << "av_interleaved_write_frame finish" << std::endl;
+			static int num = 0;
+			if (num++ > 100)
+			{
+				ui->textBrowser->append(QString("[INFO]av_interleaved_write_frame 100 packet\n"));
+				num = 0;
+			}
+		
 			if (ret < 0)
 			{
-				std::cout << "av_interleaved_write_frame error:" << ret << std::endl;
+				ui->textBrowser->append(QString("[ERROR]av_interleaved_write_frame error: '%1'\n").arg(ret));
 			}
 			av_packet_unref(&packet);
 		}
 		av_write_trailer(m_output_fmt_ctx);
 		}), [&](std::thread* p) {
-			std::cout << "shared_ptr destroy function thread id:" << std::this_thread::get_id() << std::endl;
 			if (p->joinable())
 			{	
 				m_bexit_record = true;
 				p->join();
-				std::cout << "write thread finished: " << std::this_thread::get_id() << std::endl;
 			}
 		}
 	);
@@ -197,7 +201,7 @@ void MainForm::on_stop_clicked()
 {
 	//停止写mp4线程
 	m_write_mp4_thread.reset();
-	std::cout << "close remuxing:" << std::this_thread::get_id() << std::endl;
+	ui->textBrowser->append(QString("[INFO]close remuxing \n"));
 	//写MP4录制尾巴
 	if (m_input_fmt_ctx)
 	{
@@ -213,5 +217,7 @@ void MainForm::on_stop_clicked()
 		avformat_free_context(m_output_fmt_ctx);
 		m_output_fmt_ctx = nullptr;
 	}
+	ui->start->setEnabled(true);
+	ui->stop->setEnabled(false);
 
 }
